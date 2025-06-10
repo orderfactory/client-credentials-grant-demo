@@ -1,0 +1,19 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      - KC_DB=dev-file
+      - KC_FEATURES=preview
+      - KEYCLOAK_IMPORT=/opt/keycloak/data/import/client-credentials-demo-realm.json
+    ports:
+      - "8080:8080"
+    command: ["start-dev", "--import-realm"]
+    volumes:
+      - ./import:/opt/keycloak/data/import
+#      - keycloak_data:/opt/keycloak/data  # Commented out for stateless demo
+
+#volumes:
+#  keycloak_data:

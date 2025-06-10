@@ -1,0 +1,21 @@
+header {
+  margin-bottom: 2rem;
+}
+
+nav {
+  margin-top: 1rem;
+}
+
+nav a {
+  margin: 0 0.5rem;
+}
+
+main {
+  margin: 2rem 0;
+}
+
+footer {
+  margin-top: 2rem;
+  font-size: 0.9rem;
+  color: #888;
+}

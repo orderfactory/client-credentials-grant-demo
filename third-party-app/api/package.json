@@ -1,0 +1,19 @@
+{
+  "name": "third-party-api",
+  "version": "1.0.0",
+  "description": "Third-party API for Client Credentials Grant demo",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": "22.16.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.2"
+  }
+}
