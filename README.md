@@ -44,9 +44,8 @@ The demo illustrates the complete OAuth 2.0 Client Credentials Grant flow, inclu
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (v22.16.0 recommended)
-- [npm](https://www.npmjs.com/)
-- [Docker](https://www.docker.com/)
+- [Node.js](https://nodejs.org/) 24 LTS or newer (see `.nvmrc`; npm is included with Node.js)
+- [Docker](https://www.docker.com/) with Docker Compose v2, for example Docker Desktop or Rancher Desktop
 
 ## Setup and Installation
 
@@ -56,18 +55,29 @@ The demo illustrates the complete OAuth 2.0 Client Credentials Grant flow, inclu
    cd client-credentials-grant-demo
    ```
 
-2. Start the demo using the provided PowerShell script:
+2. Install the dependencies. The four apps are [npm workspaces](https://docs.npmjs.com/cli/using-npm/workspaces), so a single install from the repository root covers all of them:
+   ```
+   npm install
+   ```
+
+3. Start the demo:
+   ```
+   npm start
+   ```
+
+   This will:
+   - Start Keycloak in a Docker container, import the demo realm, and wait until Keycloak's health check reports it ready
+   - Start the Local App API and Frontend
+   - Start the Third-Party App API and Frontend
+
+   The output of all four apps appears in the same terminal, with each line prefixed by the app's name.
+
+   On Windows, you can use the PowerShell script instead. It checks the prerequisites, installs the dependencies, and runs the same steps:
    ```
    .\start-demo.ps1
    ```
 
-   This script will:
-   - Start Keycloak in a Docker container
-   - Initialize the Local App API and Frontend
-   - Initialize the Third-Party App API and Frontend
-   - Wait for all services to be ready
-
-3. Once started, the following services will be available:
+4. Once started, the following services will be available:
 
    | Service                | URL                      |
    |------------------------|--------------------------|
@@ -77,7 +87,9 @@ The demo illustrates the complete OAuth 2.0 Client Credentials Grant flow, inclu
    | Third-Party API        | http://localhost:3002    |
    | Third-Party Frontend   | http://localhost:5174    |
 
-4. Keycloak Admin Credentials:
+   These ports are fixed. If one is already in use, the affected app reports an error and the other apps are stopped.
+
+5. Keycloak Admin Credentials:
    - Username: `admin`
    - Password: `admin`
 
@@ -108,6 +120,8 @@ The Third-Party Application allows you to:
 4. Request an access token
 5. Use the token to access the protected resource
 
+The Third-Party API saves the credentials in `third-party-app/api/.env` so they survive a restart. Revert that file (`git checkout third-party-app/api/.env`) instead of committing the generated secret.
+
 ### 4. Explore Keycloak Configuration
 
 Access the Keycloak Admin Console at http://localhost:8080 using the admin credentials to explore:
@@ -119,63 +133,91 @@ Access the Keycloak Admin Console at http://localhost:8080 using the admin crede
 ## Technologies Used
 
 ### Backend
-- **Express.js**: Web framework for the APIs
-- **Keycloak**: OAuth 2.0 authorization server
-- **Keycloak Admin Client**: For programmatic client management
-- **Axios**: HTTP client for API requests
+- **Node.js**: Runtime for the APIs, using its built-in `fetch` for HTTP requests and `--env-file` for loading `.env` files
+- **Express 5**: Web framework for the APIs
+- **Keycloak 26**: OAuth 2.0 authorization server
+- **Keycloak Admin Client** (`@keycloak/keycloak-admin-client`): For programmatic client management
 - **CORS**: Cross-Origin Resource Sharing middleware
-- **dotenv**: Environment variable management
 
 ### Frontend
-- **React**: UI library
-- **Vite**: Build tool and development server
-- **Axios**: HTTP client for API requests
-- **React Router**: For navigation
+- **React 19**: UI library
+- **React Router 8**: For navigation
+- **Vite 8**: Build tool and development server
 
-### Infrastructure
-- **Docker**: For containerizing Keycloak
-- **Docker Compose**: For managing the Keycloak container
-- **PowerShell**: For orchestrating the demo startup
+### Tooling and Infrastructure
+- **npm workspaces**: One install and one lockfile for all four apps
+- **concurrently**: Runs the APIs and frontends side by side
+- **Oxlint**: Linting for all apps
+- **Docker Compose**: Runs the Keycloak container, with a health check so startup waits until Keycloak is ready
+- **PowerShell**: Optional startup script for Windows
 
 ## Project Structure
 
 ```
 client-credentials-grant-demo/
 ├── keycloak/                  # Keycloak configuration
-│   ├── docker-compose.yml     # Docker configuration for Keycloak
+│   ├── compose.yaml           # Docker Compose configuration for Keycloak
 │   └── import/                # Realm import files
 │       └── client-credentials-demo-realm.json
 │
 ├── local-app/                 # Local application (resource server)
 │   ├── api/                   # Backend API
+│   │   ├── .env               # Configuration (Keycloak URL, realm, client)
 │   │   ├── server.js          # Express server with protected resources
 │   │   └── package.json       # Dependencies
 │   └── frontend/              # Frontend application
+│       ├── public/            # Static assets
 │       ├── src/               # React source code
 │       └── package.json       # Dependencies
 │
 ├── third-party-app/           # Third-party application (client)
 │   ├── api/                   # Backend API
+│   │   ├── .env               # Configuration and saved client credentials
 │   │   ├── server.js          # Express server
 │   │   └── package.json       # Dependencies
 │   └── frontend/              # Frontend application
+│       ├── public/            # Static assets
 │       ├── src/               # React source code
 │       └── package.json       # Dependencies
 │
+├── package.json               # Workspace definition and scripts for running the demo
+├── package-lock.json          # Lockfile for all workspaces
+├── .nvmrc                     # Node.js version
+├── .oxlintrc.json             # Lint configuration
 ├── start-demo.ps1             # PowerShell script to start all components
 └── README.md                  # This documentation
 ```
 
+## Development
+
+Run these scripts from the repository root:
+
+| Command                    | Description                                                      |
+|----------------------------|------------------------------------------------------------------|
+| `npm start`                | Start Keycloak, then all four apps                               |
+| `npm stop`                 | Stop and remove the Keycloak container                           |
+| `npm run dev`              | Start the four apps only (Keycloak must already be running)      |
+| `npm run keycloak:up`      | Start Keycloak only and wait until it is ready                   |
+| `npm run keycloak:down`    | Stop and remove the Keycloak container (same as `npm stop`)      |
+| `npm run lint`             | Lint all apps with Oxlint                                        |
+| `npm run build`            | Build both frontends for production                              |
+
+To run a single app, target its workspace, for example `npm start -w local-api` or `npm run dev -w third-party-frontend`.
+
 ## Stopping the Demo
 
-To stop all services, press `Ctrl+C` in the PowerShell window running the `start-demo.ps1` script. The script will gracefully shut down all components, including the Docker containers.
+Press `Ctrl+C` to stop the apps, then run `npm stop` to stop and remove the Keycloak container. Keycloak does not persist data between runs: the realm is imported again on the next start, and clients created during the demo are discarded.
+
+When you started the demo with `start-demo.ps1`, pressing `Ctrl+C` stops everything, including the Keycloak container.
 
 ## Additional Resources
 
 - [OAuth 2.0 Client Credentials Grant](https://oauth.net/2/grant-types/client-credentials/)
 - [Keycloak Documentation](https://www.keycloak.org/documentation)
 - [Express.js Documentation](https://expressjs.com/)
-- [React Documentation](https://reactjs.org/docs/getting-started.html)
+- [React Documentation](https://react.dev/)
+- [React Router Documentation](https://reactrouter.com/)
+- [Vite Documentation](https://vite.dev/)
 
 ## License
 

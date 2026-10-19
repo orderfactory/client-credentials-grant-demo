@@ -1,22 +1,12 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
-import axios from 'axios';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Load environment variables
-dotenv.config();
+import fs from 'node:fs';
+import path from 'node:path';
 
 // Initialize Express app
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Get current file directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // In-memory storage for client credentials (in a real app, use a secure database)
 let clientCredentials = {
@@ -30,6 +20,26 @@ let accessToken = {
   token: '',
   expiresAt: 0
 };
+
+// Call a JSON endpoint with the built-in fetch(), rejecting on network errors and non-2xx responses
+async function fetchJson(url, options) {
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    // fetch() only reports "fetch failed", so include the underlying code (e.g. ECONNREFUSED)
+    const code = error.cause?.code;
+    throw new Error(code ? `${error.message} (${code})` : error.message, { cause: error });
+  }
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(`Request failed with status code ${response.status}`);
+    error.response = { status: response.status, data };
+    throw error;
+  }
+  return data;
+}
 
 // Function to get a valid access token
 async function getAccessToken() {
@@ -50,13 +60,10 @@ async function getAccessToken() {
     params.append('client_id', clientCredentials.clientId);
     params.append('client_secret', clientCredentials.clientSecret);
 
-    const response = await axios.post(clientCredentials.tokenUrl, params, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
+    const tokenData = await fetchJson(clientCredentials.tokenUrl, {
+      method: 'POST',
+      body: params
     });
-
-    const tokenData = response.data;
 
     // Store the token with expiration time
     accessToken = {
@@ -93,7 +100,7 @@ app.get('/api/credentials', (req, res) => {
 
 // Set client credentials
 app.post('/api/credentials', (req, res) => {
-  const { clientId, clientSecret, tokenUrl } = req.body;
+  const { clientId, clientSecret, tokenUrl } = req.body ?? {};
 
   if (!clientId || !clientSecret || !tokenUrl) {
     return res.status(400).json({ error: 'All credential fields are required' });
@@ -114,7 +121,7 @@ app.post('/api/credentials', (req, res) => {
 
   // Save to .env file (in a real app, use a secure database)
   try {
-    const envPath = path.join(__dirname, '.env');
+    const envPath = path.join(import.meta.dirname, '.env');
     let envContent = fs.readFileSync(envPath, 'utf8');
 
     envContent = envContent.replace(/CLIENT_ID=.*/, `CLIENT_ID=${clientId}`);
@@ -155,7 +162,7 @@ app.get('/api/call-protected-resource', async (req, res) => {
     const token = await getAccessToken();
 
     // Call the protected resource
-    const response = await axios.get(`${process.env.LOCAL_API_URL}/api/protected-resource`, {
+    const data = await fetchJson(`${process.env.LOCAL_API_URL}/api/protected-resource`, {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -164,7 +171,7 @@ app.get('/api/call-protected-resource', async (req, res) => {
     res.json({
       success: true,
       message: 'Successfully called protected resource',
-      data: response.data
+      data
     });
   } catch (error) {
     console.error('Error calling protected resource:', error.message);
@@ -184,7 +191,10 @@ app.get('/api/call-protected-resource', async (req, res) => {
 const PORT = process.env.PORT || 3002;
 const HOST = process.env.HOST || 'localhost';
 
-app.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, (error) => {
+  // Express 5 reports listen errors (e.g. port already in use) here instead of crashing
+  if (error) throw error;
+
   console.log(`Third-party API server running at http://${HOST}:${PORT}`);
 
   // Load credentials from .env if available

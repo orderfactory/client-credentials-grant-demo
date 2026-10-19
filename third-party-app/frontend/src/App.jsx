@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route, Link } from 'react-router-dom'
+import { Routes, Route, Link } from 'react-router'
 import Home from './components/Home'
 import CredentialsForm from './components/CredentialsForm'
 import CallProtectedResource from './components/CallProtectedResource'

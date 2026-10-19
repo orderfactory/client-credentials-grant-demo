@@ -1,54 +1,33 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
-import axios from 'axios';
-import KcAdminClient from 'keycloak-admin';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Load environment variables
-dotenv.config();
+import KcAdminClient from '@keycloak/keycloak-admin-client';
 
 // Initialize Express app
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Get current file directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Keycloak Admin Client setup
-const kcAdminClient = new KcAdminClient.default({
-  baseUrl: `${process.env.KEYCLOAK_URL}`,
+// Keycloak Admin Client setup. The client stays bound to the master realm, where the admin
+// user lives, so it can refresh its own token; demo realm operations pass `realm` explicitly.
+const kcAdminClient = new KcAdminClient({
+  baseUrl: process.env.KEYCLOAK_URL,
   realmName: 'master'
 });
+const realm = process.env.KEYCLOAK_REALM;
 
 // Initialize Keycloak realm and clients
 let realmInitialized = false;
 
 // Function to authenticate with retry
-async function authenticateKeycloakAdmin(retries = 10, delayMs = 3000, targetRealm = 'master') {
+async function authenticateKeycloakAdmin(retries = 10, delayMs = 3000) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      // Always set realmName to 'master' before admin authentication
-      kcAdminClient.setConfig({
-        realmName: 'master'
-      });
       await kcAdminClient.auth({
         username: process.env.KEYCLOAK_ADMIN_USERNAME,
         password: process.env.KEYCLOAK_ADMIN_PASSWORD,
         grantType: 'password',
         clientId: 'admin-cli'
       });
-
-      // If we need to switch to a different realm after authentication
-      if (targetRealm !== 'master') {
-        kcAdminClient.setConfig({
-          realmName: targetRealm
-        });
-      }
-
       return;
     } catch (error) {
       if (attempt === retries) throw error;
@@ -62,40 +41,34 @@ async function authenticateKeycloakAdmin(retries = 10, delayMs = 3000, targetRea
 async function initializeKeycloak() {
   try {
     // Always authenticate with Keycloak admin (with retry)
-    await authenticateKeycloakAdmin(10, 3000, 'master');
+    await authenticateKeycloakAdmin();
 
     if (realmInitialized) {
-      // Even if realm is initialized, switch to the target realm and re-authenticate
-      await authenticateKeycloakAdmin(10, 3000, process.env.KEYCLOAK_REALM);
       return;
     }
 
-    let realmExists = false;
-    // Check if realm exists
-    try {
-      await kcAdminClient.realms.findOne({ realm: process.env.KEYCLOAK_REALM });
-      console.log(`Realm ${process.env.KEYCLOAK_REALM} already exists`);
-      realmExists = true;
-    } catch (error) {
+    // Check if realm exists (findOne resolves to null when it doesn't)
+    const realmExists = Boolean(await kcAdminClient.realms.findOne({ realm }));
+    if (realmExists) {
+      console.log(`Realm ${realm} already exists`);
+    } else {
       // Create realm if it doesn't exist
       await kcAdminClient.realms.create({
-        realm: process.env.KEYCLOAK_REALM,
+        realm,
         enabled: true
       });
-      console.log(`Created realm: ${process.env.KEYCLOAK_REALM}`);
+      console.log(`Created realm: ${realm}`);
     }
-
-    // Switch to the new realm and re-authenticate
-    await authenticateKeycloakAdmin(10, 3000, process.env.KEYCLOAK_REALM);
 
     // If realm was pre-configured, we don't need to create the client
     if (!realmExists) {
       // Create local-api client if it doesn't exist
-      const existingClients = await kcAdminClient.clients.find({ clientId: process.env.KEYCLOAK_CLIENT_ID });
+      const existingClients = await kcAdminClient.clients.find({ realm, clientId: process.env.KEYCLOAK_CLIENT_ID });
       if (existingClients && existingClients.length > 0) {
         console.log(`Client ${process.env.KEYCLOAK_CLIENT_ID} already exists`);
       } else {
         await kcAdminClient.clients.create({
+          realm,
           clientId: process.env.KEYCLOAK_CLIENT_ID,
           secret: process.env.KEYCLOAK_CLIENT_SECRET,
           serviceAccountsEnabled: true,
@@ -116,8 +89,8 @@ async function initializeKeycloak() {
     console.log('Keycloak initialization completed');
   } catch (error) {
     console.error('Error initializing Keycloak:', error.message);
-    if (error.response) {
-      console.error('Response data:', error.response.data);
+    if (error.responseData) {
+      console.error('Response data:', error.responseData);
     }
   }
 }
@@ -138,13 +111,17 @@ async function validateToken(req, res, next) {
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID);
     params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
 
-    const response = await axios.post(introspectionUrl, params);
+    const response = await fetch(introspectionUrl, { method: 'POST', body: params });
+    if (!response.ok) {
+      throw new Error(`Token introspection failed with status code ${response.status}`);
+    }
+    const tokenInfo = await response.json();
 
-    if (!response.data.active) {
+    if (!tokenInfo.active) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
 
-    req.user = response.data;
+    req.user = tokenInfo;
     next();
   } catch (error) {
     console.error('Token validation error:', error.message);
@@ -174,47 +151,25 @@ app.get('/api/protected-resource', validateToken, (req, res) => {
 // Create client credentials endpoint
 app.post('/api/create-client', async (req, res) => {
   try {
-    const { clientName, description } = req.body;
+    const { clientName, description } = req.body ?? {};
 
     if (!clientName) {
       return res.status(400).json({ error: 'Client name is required' });
     }
 
-    try {
-      await initializeKeycloak();
-    } catch (authError) {
-      console.error('Authentication error during client creation:', authError.message);
-      return res.status(500).json({ error: 'Failed to authenticate with Keycloak', details: authError.message });
-    }
-
-    // initializeKeycloak already switches to the correct realm and authenticates
-    // No need to manually set the realm again
+    // Authenticate with a fresh admin token (and make sure the realm exists). The admin
+    // client refreshes the token itself if it nears expiry, so calls below need no retries.
+    await initializeKeycloak();
 
     // Check if client already exists
-    try {
-      const existingClient = await kcAdminClient.clients.find({ clientId: clientName });
-      if (existingClient && existingClient.length > 0) {
-        return res.status(409).json({ error: 'Client already exists' });
-      }
-    } catch (error) {
-      console.error('Error checking client existence:', error.message);
-      // If this is an authentication error, try to re-authenticate and try again
-      if (error.message.includes('401') || error.message.includes('Unauthorized')) {
-        try {
-          await authenticateKeycloakAdmin(3, 1000, process.env.KEYCLOAK_REALM);
-          const retryExistingClient = await kcAdminClient.clients.find({ clientId: clientName });
-          if (retryExistingClient && retryExistingClient.length > 0) {
-            return res.status(409).json({ error: 'Client already exists' });
-          }
-        } catch (retryError) {
-          console.error('Error after retry for client existence check:', retryError.message);
-          return res.status(500).json({ error: 'Failed to check client existence after retry', details: retryError.message });
-        }
-      }
+    const existingClients = await kcAdminClient.clients.find({ realm, clientId: clientName });
+    if (existingClients && existingClients.length > 0) {
+      return res.status(409).json({ error: 'Client already exists' });
     }
 
-    // Define clientData before using it
-    const clientData = {
+    // Create new client
+    await kcAdminClient.clients.create({
+      realm,
       clientId: clientName,
       description: description || `Client for ${clientName}`,
       serviceAccountsEnabled: true,
@@ -224,167 +179,106 @@ app.post('/api/create-client', async (req, res) => {
       standardFlowEnabled: false,
       implicitFlowEnabled: false,
       enabled: true
-    };
-
-    // Create new client with retry for authentication errors
-    try {
-      await kcAdminClient.clients.create(clientData);
-    } catch (createError) {
-      console.error('Error creating client:', createError.message);
-      // If this is an authentication error, try to re-authenticate and try again
-      if (createError.message.includes('401') || createError.message.includes('Unauthorized')) {
-        console.log('Authentication error detected during client creation, retrying...');
-        try {
-          await authenticateKeycloakAdmin(3, 1000, process.env.KEYCLOAK_REALM);
-          await kcAdminClient.clients.create(clientData);
-          console.log('Client creation successful after retry');
-        } catch (retryError) {
-          console.error('Error after retry for client creation:', retryError.message);
-          throw new Error(`Failed to create client after retry: ${retryError.message}`);
-        }
-      } else {
-        // If it's not an authentication error, rethrow
-        throw createError;
-      }
-    }
+    });
 
     // Wait briefly to allow Keycloak to index the new client
     await new Promise(res => setTimeout(res, 1000));
 
     // Fetch the client to get its ID
-    const clients = await kcAdminClient.clients.find({ clientId: clientName });
+    const clients = await kcAdminClient.clients.find({ realm, clientId: clientName });
     if (!clients || clients.length === 0) {
       throw new Error('Could not find client after creation');
     }
     const client = clients[0];
 
-    // Generate client secret with retry for authentication errors
-    let clientSecret;
-    try {
-      clientSecret = await kcAdminClient.clients.generateNewClientSecret({
-        id: client.id
-      });
-    } catch (secretError) {
-      console.error('Error generating client secret:', secretError.message);
-      // If this is an authentication error, try to re-authenticate and try again
-      if (secretError.message.includes('401') || secretError.message.includes('Unauthorized')) {
-        console.log('Authentication error detected during secret generation, retrying...');
-        try {
-          await authenticateKeycloakAdmin(3, 1000, process.env.KEYCLOAK_REALM);
-          clientSecret = await kcAdminClient.clients.generateNewClientSecret({
-            id: client.id
-          });
-          console.log('Secret generation successful after retry');
-        } catch (retryError) {
-          console.error('Error after retry for secret generation:', retryError.message);
-          throw new Error(`Failed to generate client secret after retry: ${retryError.message}`);
-        }
-      } else {
-        // If it's not an authentication error, rethrow
-        throw secretError;
-      }
-    }
+    // Generate client secret
+    await kcAdminClient.clients.generateNewClientSecret({
+      realm,
+      id: client.id
+    });
 
-    // Get the generated secret with retry for authentication errors
-    let secretInfo;
-    try {
-      secretInfo = await kcAdminClient.clients.getClientSecret({
-        id: client.id
-      });
-    } catch (getSecretError) {
-      console.error('Error getting client secret:', getSecretError.message);
-      // If this is an authentication error, try to re-authenticate and try again
-      if (getSecretError.message.includes('401') || getSecretError.message.includes('Unauthorized')) {
-        console.log('Authentication error detected during get secret, retrying...');
-        try {
-          await authenticateKeycloakAdmin(3, 1000, process.env.KEYCLOAK_REALM);
-          secretInfo = await kcAdminClient.clients.getClientSecret({
-            id: client.id
-          });
-          console.log('Get secret successful after retry');
-        } catch (retryError) {
-          console.error('Error after retry for get secret:', retryError.message);
-          throw new Error(`Failed to get client secret after retry: ${retryError.message}`);
-        }
-      } else {
-        // If it's not an authentication error, rethrow
-        throw getSecretError;
-      }
-    }
+    // Get the generated secret
+    const secretInfo = await kcAdminClient.clients.getClientSecret({
+      realm,
+      id: client.id
+    });
 
     // Add service account roles to access protected resources
-    const serviceAccountUser = client;
-    if (serviceAccountUser) {
-      // Get service account user
-      const serviceAccountUserId = (await kcAdminClient.clients.getServiceAccountUser({
-        id: client.id
-      })).id;
+    // Get service account user
+    const serviceAccountUser = await kcAdminClient.clients.getServiceAccountUser({
+      realm,
+      id: client.id
+    });
 
-      // Get client roles for the resource server (local-api)
-      const localApiClients = await kcAdminClient.clients.find({
-        clientId: process.env.KEYCLOAK_CLIENT_ID
-      });
+    // Get client roles for the resource server (local-api)
+    const localApiClients = await kcAdminClient.clients.find({
+      realm,
+      clientId: process.env.KEYCLOAK_CLIENT_ID
+    });
 
-      const localApiClient = localApiClients && localApiClients.length > 0 ? localApiClients[0] : null;
-      if (localApiClient) {
-        // Check if the role already exists before creating it
-        try {
-          // Get all roles for the client
-          const roles = await kcAdminClient.clients.listRoles({
-            id: localApiClient.id
-          });
-
-          // Check if the role we need already exists
-          const roleExists = roles.some(role => role.name === 'access-protected-resource');
-
-          if (roleExists) {
-            console.log('Role access-protected-resource already exists');
-          } else {
-            console.log('Creating role access-protected-resource');
-            try {
-              await kcAdminClient.clients.createRole({
-                id: localApiClient.id,
-                name: 'access-protected-resource',
-                description: 'Role for accessing protected resources'
-              });
-            } catch (createError) {
-              console.error('Error creating role:', createError.message);
-              if (createError.response) {
-                console.error('Response data:', createError.response.data);
-              }
-              // If we can't create the role, we'll continue and try to use it anyway
-              // It might already exist but we couldn't retrieve it for some reason
-            }
-          }
-        } catch (error) {
-          console.error('Error checking if role exists:', error.message);
-          if (error.response) {
-            console.error('Response data:', error.response.data);
-          }
-        }
-
-        // Assign the role to the service account
-        // Get all roles and find the one we need
+    const localApiClient = localApiClients && localApiClients.length > 0 ? localApiClients[0] : null;
+    if (localApiClient) {
+      // Check if the role already exists before creating it
+      try {
+        // Get all roles for the client
         const roles = await kcAdminClient.clients.listRoles({
+          realm,
           id: localApiClient.id
         });
-        const role = roles.find(r => r.name === 'access-protected-resource');
 
-        if (!role) {
-          console.error('Role access-protected-resource not found, cannot assign to service account');
-          // Continue without assigning the role
+        // Check if the role we need already exists
+        const roleExists = roles.some(role => role.name === 'access-protected-resource');
+
+        if (roleExists) {
+          console.log('Role access-protected-resource already exists');
         } else {
-          await kcAdminClient.users.addClientRoleMappings({
-            id: serviceAccountUserId,
-            clientUniqueId: localApiClient.id,
-            roles: [
-              {
-                id: role.id,
-                name: role.name
-              }
-            ]
-          });
+          console.log('Creating role access-protected-resource');
+          try {
+            await kcAdminClient.clients.createRole({
+              realm,
+              id: localApiClient.id,
+              name: 'access-protected-resource',
+              description: 'Role for accessing protected resources'
+            });
+          } catch (createError) {
+            console.error('Error creating role:', createError.message);
+            if (createError.responseData) {
+              console.error('Response data:', createError.responseData);
+            }
+            // If we can't create the role, we'll continue and try to use it anyway
+            // It might already exist but we couldn't retrieve it for some reason
+          }
         }
+      } catch (error) {
+        console.error('Error checking if role exists:', error.message);
+        if (error.responseData) {
+          console.error('Response data:', error.responseData);
+        }
+      }
+
+      // Assign the role to the service account
+      // Get all roles and find the one we need
+      const roles = await kcAdminClient.clients.listRoles({
+        realm,
+        id: localApiClient.id
+      });
+      const role = roles.find(r => r.name === 'access-protected-resource');
+
+      if (!role) {
+        console.error('Role access-protected-resource not found, cannot assign to service account');
+        // Continue without assigning the role
+      } else {
+        await kcAdminClient.users.addClientRoleMappings({
+          realm,
+          id: serviceAccountUser.id,
+          clientUniqueId: localApiClient.id,
+          roles: [
+            {
+              id: role.id,
+              name: role.name
+            }
+          ]
+        });
       }
     }
 
@@ -399,8 +293,8 @@ app.post('/api/create-client', async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating client:', error.message);
-    if (error.response) {
-      console.error('Response data:', error.response.data);
+    if (error.responseData) {
+      console.error('Response data:', error.responseData);
     }
     res.status(500).json({ error: 'Failed to create client', details: error.message });
   }
@@ -430,13 +324,16 @@ app.get('/api/keycloak-config', (req, res) => {
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || 'localhost';
 
-app.listen(PORT, HOST, async () => {
+app.listen(PORT, HOST, async (error) => {
+  // Express 5 reports listen errors (e.g. port already in use) here instead of crashing
+  if (error) throw error;
+
   console.log(`Local API server running at http://${HOST}:${PORT}`);
 
   // Try to initialize Keycloak on startup
   try {
     await initializeKeycloak();
-  } catch (error) {
+  } catch {
     console.error('Failed to initialize Keycloak on startup. Will retry when needed.');
   }
 });

@@ -1,0 +1,26 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    container_name: keycloak
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      - KC_DB=dev-file
+      - KC_HEALTH_ENABLED=true
+    ports:
+      - "8080:8080"
+    command: ["start-dev", "--import-realm"]
+    volumes:
+      - ./import:/opt/keycloak/data/import
+#      - keycloak_data:/opt/keycloak/data  # Commented out for stateless demo
+    # Lets `docker compose up --wait` block until Keycloak is ready. The image has no curl,
+    # so bash queries the readiness endpoint on the management port (9000) directly.
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q 'HTTP/1.1 200' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+#volumes:
+#  keycloak_data:

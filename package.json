@@ -1,0 +1,27 @@
+{
+  "name": "client-credentials-grant-demo",
+  "private": true,
+  "description": "OAuth 2.0 Client Credentials Grant demo with Keycloak, Express and React",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "local-app/*",
+    "third-party-app/*"
+  ],
+  "scripts": {
+    "start": "npm run keycloak:up && npm run dev",
+    "stop": "npm run keycloak:down",
+    "dev": "concurrently --names local-api,local-frontend,third-party-api,third-party-frontend --prefix-colors blue,cyan,magenta,green --kill-others-on-fail \"npm start -w local-api\" \"npm run dev -w local-frontend\" \"npm start -w third-party-api\" \"npm run dev -w third-party-frontend\"",
+    "keycloak:up": "docker compose -f keycloak/compose.yaml up --detach --wait",
+    "keycloak:down": "docker compose -f keycloak/compose.yaml down",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "oxlint --deny-warnings"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6",
+    "oxlint": "^1.88.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
