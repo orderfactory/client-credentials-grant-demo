@@ -6,32 +6,39 @@ import './App.css'
 
 function App() {
   const [keycloakInitialized, setKeycloakInitialized] = useState(false)
+  const [keycloakError, setKeycloakError] = useState(null)
 
   useEffect(() => {
     // Check if Keycloak is initialized on component mount
-    fetch('/api/keycloak-config')
-      .then(response => response.json())
-      .then(data => {
-        console.log('Keycloak config:', data)
+    const initializeKeycloak = async () => {
+      try {
+        const configResponse = await fetch('/api/keycloak-config')
+        if (!configResponse.ok) {
+          throw new Error(`Local API is not available (HTTP ${configResponse.status})`)
+        }
+        console.log('Keycloak config:', await configResponse.json())
+
         // Initialize Keycloak if needed
-        fetch('/api/init-keycloak', {
+        const response = await fetch('/api/init-keycloak', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           }
         })
-          .then(response => response.json())
-          .then(data => {
-            console.log('Keycloak initialization:', data)
-            setKeycloakInitialized(true)
-          })
-          .catch(error => {
-            console.error('Error initializing Keycloak:', error)
-          })
-      })
-      .catch(error => {
-        console.error('Error fetching Keycloak config:', error)
-      })
+        const data = await response.json().catch(() => ({}))
+        console.log('Keycloak initialization:', data)
+
+        if (!response.ok) {
+          throw new Error(data.details || `HTTP ${response.status}`)
+        }
+        setKeycloakInitialized(true)
+      } catch (error) {
+        console.error('Error initializing Keycloak:', error)
+        setKeycloakError(error.message)
+      }
+    }
+
+    initializeKeycloak()
   }, [])
 
   return (
@@ -55,7 +62,9 @@ function App() {
         <p>
           {keycloakInitialized
             ? '✅ Keycloak is initialized and ready'
-            : '⏳ Initializing Keycloak...'}
+            : keycloakError
+              ? `❌ Keycloak initialization failed: ${keycloakError}`
+              : '⏳ Initializing Keycloak...'}
         </p>
       </footer>
     </div>

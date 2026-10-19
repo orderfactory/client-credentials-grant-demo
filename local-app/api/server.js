@@ -15,6 +15,11 @@ const kcAdminClient = new KcAdminClient({
 });
 const realm = process.env.KEYCLOAK_REALM;
 
+// fetch() errors only say "fetch failed", so include the underlying code (e.g. ECONNREFUSED)
+function describeError(error) {
+  return error.cause?.code ? `${error.message} (${error.cause.code})` : error.message;
+}
+
 // Initialize Keycloak realm and clients
 let realmInitialized = false;
 
@@ -31,13 +36,13 @@ async function authenticateKeycloakAdmin(retries = 10, delayMs = 3000) {
       return;
     } catch (error) {
       if (attempt === retries) throw error;
-      console.warn(`Keycloak admin authentication failed (attempt ${attempt}/${retries}): ${error.message}`);
+      console.warn(`Keycloak admin authentication failed (attempt ${attempt}/${retries}): ${describeError(error)}`);
       await new Promise(res => setTimeout(res, delayMs));
     }
   }
 }
 
-// Function to initialize Keycloak realm
+// Function to initialize Keycloak realm; failures are logged and rethrown to the caller
 async function initializeKeycloak() {
   try {
     // Always authenticate with Keycloak admin (with retry)
@@ -88,10 +93,11 @@ async function initializeKeycloak() {
     realmInitialized = true;
     console.log('Keycloak initialization completed');
   } catch (error) {
-    console.error('Error initializing Keycloak:', error.message);
+    console.error('Error initializing Keycloak:', describeError(error));
     if (error.responseData) {
       console.error('Response data:', error.responseData);
     }
+    throw error;
   }
 }
 
@@ -306,8 +312,8 @@ app.post('/api/init-keycloak', async (req, res) => {
     await initializeKeycloak();
     res.json({ success: true, message: 'Keycloak initialized successfully' });
   } catch (error) {
-    console.error('Error initializing Keycloak:', error.message);
-    res.status(500).json({ error: 'Failed to initialize Keycloak', details: error.message });
+    // initializeKeycloak has already logged the details
+    res.status(500).json({ error: 'Failed to initialize Keycloak', details: describeError(error) });
   }
 });
 
